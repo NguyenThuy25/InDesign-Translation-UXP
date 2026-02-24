@@ -355,6 +355,167 @@ def process_xliff_with_tags(xliff_file_path: str) -> str:
             "data": []
         })
 
+@mcp.tool()
+def reflect_xliff_into_indesign(
+    xliff_path: str,
+    max_replacements: int = 50
+) -> str:
+    """
+    Complete workflow to reflect XLIFF translations into the active InDesign document.
+    
+    This tool performs the translation workflow on the currently active document:
+    1. Processes XLIFF file to extract translation units
+    2. Performs find/replace operations to apply translations to the active document
+    
+    Args:
+        xliff_path (str): Path to the XLIFF file containing translations
+        max_replacements (int, optional): Maximum number of replacements to perform. 
+            Defaults to 50 to prevent excessive operations.
+    
+    Returns:
+        str: JSON string containing workflow results and statistics
+        
+    Note:
+        Requires an InDesign document to be currently open and active.
+    """
+    try:
+        results = {
+            "success": True,
+            "workflow_steps": {},
+            "statistics": {},
+            "errors": []
+        }
+        
+        # Step 1: Process XLIFF file
+        logger.info(f"Step 1: Processing XLIFF file: {xliff_path}")
+        results["workflow_steps"]["step1_process_xliff"] = {"status": "starting"}
+        
+        translation_units = XliffProcessorService.process_xliff(xliff_path)
+        
+        if not translation_units:
+            error_msg = "No translation units found in XLIFF file"
+            results["workflow_steps"]["step1_process_xliff"] = {"status": "failed", "error": error_msg}
+            results["errors"].append(error_msg)
+            results["success"] = False
+            return json.dumps(results, ensure_ascii=False, indent=2)
+        
+        # Filter valid translation pairs
+        valid_units = []
+        for unit in translation_units:
+            if (unit.source.strip() and 
+                unit.target.strip() and 
+                unit.source != unit.target):
+                valid_units.append(unit)
+        
+        results["workflow_steps"]["step1_process_xliff"] = {
+            "status": "success",
+            "total_units": len(translation_units),
+            "valid_pairs": len(valid_units)
+        }
+        
+        # Step 2: Apply translations (limited by max_replacements)
+        logger.info(f"Step 2: Applying translations (max: {max_replacements})")
+        results["workflow_steps"]["step2_apply_translations"] = {"status": "starting"}
+        
+        replacement_results = []
+        successful_replacements = 0
+        failed_replacements = 0
+        
+        # Limit the number of replacements to prevent excessive operations
+        units_to_process = valid_units[:max_replacements]
+        
+        for i, unit in enumerate(units_to_process):
+            logger.info(f"Processing replacement {i+1}/{len(units_to_process)}: '{unit.source[:30]}...' -> '{unit.target[:30]}...'")
+            
+            find_replace_command = createCommand("findReplaceText", {
+                "findText": unit.source,
+                "replaceText": unit.target,
+                "caseSensitive": False,
+                "wholeWord": False
+            })
+            
+            try:
+                replace_result = sendCommand(find_replace_command)
+                
+                # Check nested response structure for find/replace
+                if (replace_result and 
+                    replace_result.get("status") == "SUCCESS" and
+                    replace_result.get("response", {}).get("status") == "success"):
+                    
+                    inner_response = replace_result.get("response", {})
+                    items_changed = inner_response.get("data", {}).get("itemsChanged", 0)
+                    successful_replacements += 1
+                    replacement_results.append({
+                        "unit_id": unit.unitId,
+                        "source": unit.source[:100] + "..." if len(unit.source) > 100 else unit.source,
+                        "target": unit.target[:100] + "..." if len(unit.target) > 100 else unit.target,
+                        "status": "success",
+                        "items_changed": items_changed
+                    })
+                else:
+                    failed_replacements += 1
+                    # Get error from inner response or outer response
+                    inner_response = replace_result.get("response", {}) if replace_result else {}
+                    error_msg = (inner_response.get("message") or 
+                               replace_result.get("message") if replace_result else "No response")
+                    replacement_results.append({
+                        "unit_id": unit.unitId,
+                        "source": unit.source[:100] + "..." if len(unit.source) > 100 else unit.source,
+                        "target": unit.target[:100] + "..." if len(unit.target) > 100 else unit.target,
+                        "status": "failed",
+                        "error": error_msg
+                    })
+                    
+            except Exception as e:
+                failed_replacements += 1
+                error_msg = f"Exception during replacement: {str(e)}"
+                replacement_results.append({
+                    "unit_id": unit.unitId,
+                    "source": unit.source[:100] + "..." if len(unit.source) > 100 else unit.source,
+                    "target": unit.target[:100] + "..." if len(unit.target) > 100 else unit.target,
+                    "status": "failed",
+                    "error": error_msg
+                })
+        
+        results["workflow_steps"]["step2_apply_translations"] = {
+            "status": "completed",
+            "processed_units": len(units_to_process),
+            "successful_replacements": successful_replacements,
+            "failed_replacements": failed_replacements
+        }
+        
+        # Compile final statistics
+        results["statistics"] = {
+            "xliff_file": xliff_path,
+            "document_source": "active_document",
+            "total_translation_units": len(translation_units),
+            "valid_translation_pairs": len(valid_units),
+            "processed_pairs": len(units_to_process),
+            "successful_replacements": successful_replacements,
+            "failed_replacements": failed_replacements,
+            "success_rate": f"{(successful_replacements / len(units_to_process) * 100):.1f}%" if units_to_process else "0%"
+        }
+        
+        # Include sample replacement results (first 10)
+        results["sample_replacements"] = replacement_results[:10]
+        
+        # Mark overall success based on whether any replacements succeeded
+        if successful_replacements == 0 and len(units_to_process) > 0:
+            results["success"] = False
+            results["errors"].append("No translations were successfully applied")
+        
+        return json.dumps(results, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Error in reflect_xliff_into_indesign: {str(e)}")
+        return json.dumps({
+            "success": False,
+            "message": f"Workflow failed with error: {str(e)}",
+            "xliff_file": xliff_path,
+            "document_source": "active_document",
+            "error": str(e)
+        }, ensure_ascii=False, indent=2)
+
 @mcp.resource("config://get_instructions")
 def get_instructions() -> str:
     """Read this first! Returns information and instructions on how to use Photoshop and this API"""

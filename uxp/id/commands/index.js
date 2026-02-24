@@ -551,6 +551,72 @@ const populateTable = async (command) => {
     }
 };
 
+const openDocument = async (command) => {
+    try {
+        console.log("=== OPENDOCUMENT V4 CALLED ===");
+        const { filePath } = command.options;
+
+        if (!filePath) {
+            return {
+                status: "error",
+                message: "File path is required"
+            };
+        }
+
+        // Normalize path - handle double backslashes from JSON
+        let normalizedPath = filePath.replace(/\\\\/g, '\\');
+        console.log("Original path:", filePath);
+        console.log("Normalized path:", normalizedPath);
+        
+        // Use UXP localFileSystem.getEntryWithUrl approach
+        const { localFileSystem } = require('uxp').storage;
+        
+        console.log("Getting file entry with URL...");
+        const entry = await localFileSystem.getEntryWithUrl(normalizedPath);
+
+        if (!entry) {
+            console.log("File entry not found via getEntryWithUrl");
+            return {
+                status: "error",
+                message: `File not found: ${normalizedPath}`
+            };
+        }
+
+        console.log("File entry found, attempting to open with app.open()...");
+        console.log("Entry name:", entry.name);
+        
+        const document = app.open(entry);
+        
+        if (!document) {
+            console.log("app.open() returned null/undefined");
+            return {
+                status: "error",
+                message: "app.open() failed to return document object"
+            };
+        }
+
+        console.log("SUCCESS: Document opened via app.open():", document.name);
+        return {
+            status: "success",
+            message: `Document opened: ${document.name}`,
+            data: {
+                documentName: document.name,
+                filePath: normalizedPath,
+                method: "getEntryWithUrl + app.open"
+            }
+        };
+
+    } catch (error) {
+        console.error("ERROR in openDocument:", error);
+        console.error("Error name:", error.name);
+        console.error("Error message:", error.message);
+        return {
+            status: "error",
+            message: `Error opening document: ${error.message || 'Unknown error'}`
+        };
+    }
+};
+
 
 const getUnitForIntent = (intent) => {
 
@@ -585,7 +651,8 @@ const commandHandlers = {
     editTextFrame,
     findReplaceText,
     createTable,
-    populateTable
+    populateTable,
+    openDocument
 };
 
 
@@ -614,7 +681,7 @@ const getActiveDocumentSettings = (command) => {
 }
 
 const checkRequiresActiveDocument = async (command) => {
-    if (!requiresActiveProject(command)) {
+    if (!requiresActiveDocument(command)) {
         return;
     }
 
@@ -627,12 +694,13 @@ const checkRequiresActiveDocument = async (command) => {
 };
 
 const requiresActiveDocument = (command) => {
-    return !["createDocument"].includes(command.action);
+    return !["createDocument", "openDocument"].includes(command.action);
 };
 
 
 module.exports = {
     getActiveDocumentSettings,
     checkRequiresActiveDocument,
-    parseAndRouteCommand
+    parseAndRouteCommand,
+    requiresActiveDocument
 };

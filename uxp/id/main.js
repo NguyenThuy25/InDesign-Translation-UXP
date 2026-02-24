@@ -29,6 +29,7 @@ const {
     parseAndRouteCommand,
     checkRequiresActiveDocument,
     getActiveDocumentSettings,
+    requiresActiveDocument,
 } = require("./commands/index.js");
 
 const APPLICATION = "indesign";
@@ -51,7 +52,11 @@ const onCommandPacket = async (packet) => {
 
         out.response = response;
         out.status = "SUCCESS";
-        out.activeDocument = await getActiveDocumentSettings();
+        
+        // Only get active document settings if a document is required
+        if (requiresActiveDocument(command)) {
+            out.activeDocument = await getActiveDocumentSettings();
+        }
         //out.projectItems = await getProjectContentInfo();
     } catch (e) {
         out.status = "FAILURE";
